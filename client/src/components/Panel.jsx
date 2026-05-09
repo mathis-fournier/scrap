@@ -23,9 +23,13 @@ export default function Panel() {
     const [items, setItems] = useState([]);
 
     // --- State for Settings / Watchlist ---
-    const [watchlist, setWatchlist] = useState([]);
+    // Initialize from localStorage
+    const [watchlist, setWatchlist] = useState(() => {
+        const saved = localStorage.getItem('watchlist');
+        return saved ? JSON.parse(saved) : [];
+    });
+
     const [newSearchName, setNewSearchName] = useState('');
-    // Notice: newSearchUrl state has been removed!
 
     const platforms = [
         { name: 'Vinted', icon: ShoppingBag },
@@ -33,6 +37,18 @@ export default function Panel() {
         { name: 'Ebay', icon: Tag },
         { name: 'Others', icon: Globe },
     ];
+
+    // Persist watchlist whenever it changes
+    useEffect(() => {
+        localStorage.setItem('watchlist', JSON.stringify(watchlist));
+    }, [watchlist]);
+
+    // Send saved watchlist to backend on first mount
+    useEffect(() => {
+        if (watchlist.length > 0) {
+            socket.emit('update-watchlist', watchlist);
+        }
+    }, []);
 
     useEffect(() => {
         const handleNewItem = (newItem) => {
@@ -66,26 +82,48 @@ export default function Panel() {
     // --- Watchlist Handlers ---
     const handleAddKeyword = (e) => {
         e.preventDefault();
+
         const trimmedName = newSearchName.trim();
         if (!trimmedName) return;
 
-        // Automatically construct the Vinted API URL, sorted by newest
-        const encodedKeyword = encodeURIComponent(trimmedName);
-        const autoConstructedUrl = `https://www.vinted.fr/api/v2/catalog/items?search_text=${encodedKeyword}&order=newest_first`;
+        // Prevent duplicates
+        if (
+            watchlist.some(
+                (item) =>
+                    item.name.toLowerCase() === trimmedName.toLowerCase()
+            )
+        ) {
+            setNewSearchName('');
+            return;
+        }
 
-        // Add to state using the auto-generated URL
-        const newWatchlist = [...watchlist, { name: trimmedName, apiUrl: autoConstructedUrl }];
+        // Automatically construct the Vinted API URL
+        const encodedKeyword = encodeURIComponent(trimmedName);
+
+        const autoConstructedUrl =
+            `https://www.vinted.fr/api/v2/catalog/items?search_text=${encodedKeyword}&order=newest_first`;
+
+        const newWatchlist = [
+            ...watchlist,
+            {
+                name: trimmedName,
+                apiUrl: autoConstructedUrl
+            }
+        ];
+
         setWatchlist(newWatchlist);
 
         // Send to backend
         socket.emit('update-watchlist', newWatchlist);
 
-        // Reset input
         setNewSearchName('');
     };
 
     const handleRemoveKeyword = (nameToRemove) => {
-        const newWatchlist = watchlist.filter(w => w.name !== nameToRemove);
+        const newWatchlist = watchlist.filter(
+            (w) => w.name !== nameToRemove
+        );
+
         setWatchlist(newWatchlist);
 
         // Send to backend
@@ -94,7 +132,9 @@ export default function Panel() {
 
     const toggleSidebar = () => setIsSidebarOpen(!isSidebarOpen);
 
-    const filteredItems = items.filter((item) => item.platform === activeTab);
+    const filteredItems = items.filter(
+        (item) => item.platform === activeTab
+    );
 
     return (
         <div className="flex h-screen w-full overflow-hidden bg-neutral-950 font-sans text-neutral-200">
