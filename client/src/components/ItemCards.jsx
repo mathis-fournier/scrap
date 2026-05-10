@@ -14,7 +14,7 @@ export function ItemCard({ item }) {
                 />
                 {/* Floating Price Tag */}
                 <div className="absolute right-3 top-3 rounded-lg bg-black/80 px-2.5 py-1 text-sm font-bold text-white shadow-lg backdrop-blur-md">
-                    {item.price.amount} €
+                    {item.price} €
                 </div>
             </div>
 
