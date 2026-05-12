@@ -9,7 +9,13 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const db = require('./db');
 
+// Import your custom security middleware
+const { authenticateToken, requireAdmin } = require('./middleware/auth');
+
+// 1. DECLARE THE APP FIRST
 const app = express();
+
+// 2. THEN YOU CAN USE IT
 app.use(cors());
 app.use(express.json());
 
@@ -18,23 +24,7 @@ const io = new Server(server, { cors: { origin: "*" } });
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-cda-key-12345';
 
-const requireAdmin = async (req, res, next) => {
-    const { adminId } = req.query; // Passed from the frontend
-    if (!adminId) return res.status(403).json({ error: "No ID provided" });
-
-    try {
-        const [users] = await db.execute('SELECT role FROM users WHERE id = ?', [adminId]);
-        if (users.length > 0 && users[0].role === 'admin') {
-            next(); // They are an admin, let them through
-        } else {
-            res.status(403).json({ error: "Unauthorized. Admins only." });
-        }
-    } catch (err) {
-        res.status(500).json({ error: "Server error" });
-    }
-};
-
-// --- 1. AUTHENTICATION ROUTES ---
+// --- 1. PUBLIC AUTHENTICATION ROUTES ---
 
 app.post('/api/register', async (req, res) => {
     const { email, password } = req.body;
@@ -43,8 +33,8 @@ app.post('/api/register', async (req, res) => {
         const id = crypto.randomUUID();
         await db.execute('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [id, email, hashedPassword]);
 
-        const token = jwt.sign({ userId: id }, JWT_SECRET, { expiresIn: '7d' });
-        res.json({ token, userId: id });
+        const token = jwt.sign({ userId: id, role: 'user' }, JWT_SECRET, { expiresIn: '7d' });
+        res.json({ token, userId: id, role: 'user' });
     } catch (err) {
         if (err.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: "Email already exists" });
         res.status(500).json({ error: err.message });
@@ -61,7 +51,6 @@ app.post('/api/login', async (req, res) => {
         const match = await bcrypt.compare(password, user.password);
         if (!match) return res.status(401).json({ error: "Invalid credentials" });
 
-        // Include the role in the response
         const token = jwt.sign({ userId: user.id, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
         res.json({ token, userId: user.id, role: user.role });
     } catch (err) {
@@ -69,33 +58,26 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// --- 2. SETTINGS & PROXY ASSIGNMENT ---
+// --- 2. PROTECTED USER ROUTES ---
 
-app.post('/api/settings', async (req, res) => {
-    const { userId, cookie } = req.body;
+app.post('/api/settings', authenticateToken, async (req, res) => {
+    const userId = req.user.userId; 
+    const { cookie } = req.body;
+    
     try {
         const [users] = await db.execute('SELECT proxy_url FROM users WHERE id = ?', [userId]);
         let proxyToSave = users[0].proxy_url;
 
-        // If they don't have a proxy, assign a STRICTLY UNIQUE one
         if (!proxyToSave && process.env.PROXY_POOL) {
             const pool = process.env.PROXY_POOL.split(',');
-
-            // 1. Ask the database which proxies are already taken by anyone
             const [usedProxiesRows] = await db.execute('SELECT proxy_url FROM users WHERE proxy_url IS NOT NULL');
             const usedProxies = usedProxiesRows.map(row => row.proxy_url);
-
-            // 2. Filter the pool to only keep unused proxies
             const availableProxies = pool.filter(proxy => !usedProxies.includes(proxy));
 
             if (availableProxies.length > 0) {
-                // Pick a random proxy from the AVAILABLE list, not the whole pool
                 proxyToSave = availableProxies[Math.floor(Math.random() * availableProxies.length)];
             } else {
-                // 🛑 CRITICAL SAFETY: If all proxies are taken, block the assignment
-                return res.status(400).json({
-                    error: "System at capacity! No dedicated proxies available right now."
-                });
+                return res.status(400).json({ error: "System at capacity! No dedicated proxies available right now." });
             }
         }
 
@@ -106,49 +88,46 @@ app.post('/api/settings', async (req, res) => {
     }
 });
 
-// --- 3. KEYWORD ROUTES ---
-
-app.post('/api/keywords', async (req, res) => {
-    const { userId, keyword, minPrice, maxPrice } = req.body;
+app.post('/api/keywords', authenticateToken, async (req, res) => {
+    const userId = req.user.userId; 
+    const { keyword, minPrice, maxPrice } = req.body;
     const id = crypto.randomUUID();
     
-    // Base Vinted URL
+    const parsedMin = minPrice !== '' && minPrice !== null ? parseFloat(minPrice) : null;
+    const parsedMax = maxPrice !== '' && maxPrice !== null ? parseFloat(maxPrice) : null;
+
     let apiUrl = `https://www.vinted.fr/api/v2/catalog/items?search_text=${encodeURIComponent(keyword)}&order=newest_first`;
-    
-    // Append price parameters if the user provided them
-    if (minPrice) apiUrl += `&price_from=${minPrice}`;
-    if (maxPrice) apiUrl += `&price_to=${maxPrice}`;
+    if (parsedMin !== null) apiUrl += `&price_from=${parsedMin}`;
+    if (parsedMax !== null) apiUrl += `&price_to=${parsedMax}`;
 
     try {
         await db.execute(
             'INSERT INTO keywords (id, user_id, name, min_price, max_price, api_url) VALUES (?, ?, ?, ?, ?, ?)', 
-            [id, userId, keyword, minPrice || null, maxPrice || null, apiUrl]
+            [id, userId, keyword, parsedMin, parsedMax, apiUrl]
         );
-        res.json({ 
-            success: true, 
-            id, 
-            name: keyword, 
-            min_price: minPrice || null, 
-            max_price: maxPrice || null, 
-            apiUrl 
-        });
+        res.json({ success: true, id, name: keyword, min_price: parsedMin, max_price: parsedMax, apiUrl });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.get('/api/keywords/:userId', async (req, res) => {
+app.get('/api/keywords/:targetUserId', authenticateToken, async (req, res) => {
+    if (req.user.userId !== req.params.targetUserId) {
+        return res.status(403).json({ error: "Forbidden access." });
+    }
+
     try {
-        const [rows] = await db.execute('SELECT * FROM keywords WHERE user_id = ?', [req.params.userId]);
+        const [rows] = await db.execute('SELECT * FROM keywords WHERE user_id = ?', [req.user.userId]);
         res.json(rows);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
 
-app.delete('/api/keywords/:keywordId', async (req, res) => {
+app.delete('/api/keywords/:keywordId', authenticateToken, async (req, res) => {
     const { keywordId } = req.params;
-    const { userId } = req.query; // Ensure the user actually owns the keyword
+    const userId = req.user.userId; 
+    
     try {
         await db.execute('DELETE FROM keywords WHERE id = ? AND user_id = ?', [keywordId, userId]);
         res.json({ success: true });
@@ -157,13 +136,15 @@ app.delete('/api/keywords/:keywordId', async (req, res) => {
     }
 });
 
-// --- 4. HISTORY ROUTE ---
+app.get('/api/items/:targetUserId', authenticateToken, async (req, res) => {
+    if (req.user.userId !== req.params.targetUserId) {
+        return res.status(403).json({ error: "Forbidden access." });
+    }
 
-app.get('/api/items/:userId', async (req, res) => {
     try {
         const [rows] = await db.execute(
             'SELECT * FROM items WHERE user_id = ? ORDER BY created_at DESC LIMIT 60',
-            [req.params.userId]
+            [req.user.userId]
         );
         res.json(rows);
     } catch (err) {
@@ -171,10 +152,9 @@ app.get('/api/items/:userId', async (req, res) => {
     }
 });
 
-// --- ADMIN ROUTES ---
+// --- 3. PROTECTED ADMIN ROUTES ---
 
-// 1. Get high-level system metrics
-app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+app.get('/api/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const [userCount] = await db.execute('SELECT COUNT(*) as total FROM users');
         const [keywordCount] = await db.execute('SELECT COUNT(*) as total FROM keywords');
@@ -190,8 +170,7 @@ app.get('/api/admin/stats', requireAdmin, async (req, res) => {
     }
 });
 
-// 2. Get a detailed table of all users and their health
-app.get('/api/admin/users', requireAdmin, async (req, res) => {
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (req, res) => {
     try {
         const [users] = await db.execute(`
             SELECT 
@@ -210,10 +189,9 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
     }
 });
 
-app.delete('/api/admin/users/:targetId', requireAdmin, async (req, res) => {
+app.delete('/api/admin/users/:targetId', authenticateToken, requireAdmin, async (req, res) => {
     try {
-        // Prevent the admin from accidentally deleting themselves
-        if (req.params.targetId === req.query.adminId) {
+        if (req.params.targetId === req.user.userId) {
             return res.status(400).json({ error: "Cannot delete your own admin account." });
         }
         await db.execute('DELETE FROM users WHERE id = ?', [req.params.targetId]);
@@ -222,7 +200,8 @@ app.delete('/api/admin/users/:targetId', requireAdmin, async (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
-// --- 5. WEBSOCKETS & REDIS ---
+
+// --- 4. WEBSOCKETS & REDIS ---
 
 io.on('connection', (socket) => {
     const userId = socket.handshake.query.userId;
@@ -233,7 +212,6 @@ io.on('connection', (socket) => {
 });
 
 const redisSub = new Redis(process.env.REDIS_URL);
-// Listen to both item drops and system events (like dead cookies)
 redisSub.subscribe('vinted-drops', 'vinted-system');
 
 redisSub.on('message', (channel, message) => {

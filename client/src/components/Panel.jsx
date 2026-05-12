@@ -37,7 +37,7 @@ function AuthScreen({ onAuthSuccess }) {
 
             localStorage.setItem('token', data.token);
             localStorage.setItem('userId', data.userId);
-            localStorage.setItem('role', data.role || 'user'); // Save the role!
+            localStorage.setItem('role', data.role || 'user');
             onAuthSuccess(data.userId, data.role || 'user');
         } catch (err) {
             setError(err.message);
@@ -100,9 +100,15 @@ function Dashboard({ userId, role, onLogout }) {
     const [cookieDead, setCookieDead] = useState(false);
     const [minPrice, setMinPrice] = useState('');
     const [maxPrice, setMaxPrice] = useState('');
+    
     // Admin State
     const [adminStats, setAdminStats] = useState({ users: 0, keywords: 0, items: 0 });
     const [adminUsers, setAdminUsers] = useState([]);
+
+    // 🔒 Helper to grab the token for API calls
+    const getAuthHeaders = () => {
+        return { 'Authorization': `Bearer ${localStorage.getItem('token')}` };
+    };
 
     const platforms = [
         { name: 'Vinted', icon: ShoppingBag },
@@ -125,10 +131,16 @@ function Dashboard({ userId, role, onLogout }) {
     useEffect(() => {
         const fetchInitialData = async () => {
             try {
-                const kwRes = await fetch(`${API_URL}/api/keywords/${userId}`);
+                // 🛡️ Added Authentication Headers
+                const kwRes = await fetch(`${API_URL}/api/keywords/${userId}`, {
+                    headers: getAuthHeaders()
+                });
                 setWatchlist(await kwRes.json());
 
-                const itemsRes = await fetch(`${API_URL}/api/items/${userId}`);
+                // 🛡️ Added Authentication Headers
+                const itemsRes = await fetch(`${API_URL}/api/items/${userId}`, {
+                    headers: getAuthHeaders()
+                });
                 setItems(await itemsRes.json());
             } catch (err) {
                 console.error("Failed to fetch initial data", err);
@@ -146,10 +158,12 @@ function Dashboard({ userId, role, onLogout }) {
 
     const fetchAdminData = async () => {
         try {
-            const statsRes = await fetch(`${API_URL}/api/admin/stats?adminId=${userId}`);
+            // 🛡️ Added Authentication Headers
+            const statsRes = await fetch(`${API_URL}/api/admin/stats?adminId=${userId}`, { headers: getAuthHeaders() });
             setAdminStats(await statsRes.json());
 
-            const usersRes = await fetch(`${API_URL}/api/admin/users?adminId=${userId}`);
+            // 🛡️ Added Authentication Headers
+            const usersRes = await fetch(`${API_URL}/api/admin/users?adminId=${userId}`, { headers: getAuthHeaders() });
             setAdminUsers(await usersRes.json());
         } catch (err) {
             console.error("Failed to fetch admin data", err);
@@ -158,7 +172,15 @@ function Dashboard({ userId, role, onLogout }) {
 
     const handleSaveCookie = async (e) => {
         e.preventDefault();
-        await fetch(`${API_URL}/api/settings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId, cookie: cookieInput }) });
+        // 🛡️ Added Authentication Headers
+        await fetch(`${API_URL}/api/settings`, { 
+            method: 'POST', 
+            headers: { 
+                'Content-Type': 'application/json',
+                ...getAuthHeaders()
+            }, 
+            body: JSON.stringify({ userId, cookie: cookieInput }) 
+        });
         setCookieInput('');
         setCookieDead(false);
         alert('Cookie saved securely!');
@@ -170,9 +192,13 @@ function Dashboard({ userId, role, onLogout }) {
         if (!trimmedName) return;
 
         try {
+            // 🛡️ Added Authentication Headers
             const res = await fetch(`${API_URL}/api/keywords`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    ...getAuthHeaders()
+                },
                 body: JSON.stringify({
                     userId,
                     keyword: trimmedName,
@@ -185,24 +211,35 @@ function Dashboard({ userId, role, onLogout }) {
                 const newKeyword = await res.json();
                 setWatchlist([...watchlist, newKeyword]);
                 setNewSearchName('');
-                setMinPrice(''); // Clear inputs after save
+                setMinPrice(''); 
                 setMaxPrice('');
             }
         } catch (err) {
             console.error(err);
         }
     };
+
     const deleteKeyword = async (id) => {
-        const res = await fetch(`${API_URL}/api/keywords/${id}?userId=${userId}`, { method: 'DELETE' });
+        // 🛡️ Added Authentication Headers
+        const res = await fetch(`${API_URL}/api/keywords/${id}?userId=${userId}`, { 
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
         if (res.ok) setWatchlist(prev => prev.filter(kw => kw.id !== id));
     };
 
     const deleteUser = async (targetId) => {
         if (!window.confirm("Are you sure? This deletes the user and all their history permanently.")) return;
-        const res = await fetch(`${API_URL}/api/admin/users/${targetId}?adminId=${userId}`, { method: 'DELETE' });
+        // 🛡️ Added Authentication Headers
+        const res = await fetch(`${API_URL}/api/admin/users/${targetId}?adminId=${userId}`, { 
+            method: 'DELETE',
+            headers: getAuthHeaders()
+        });
         if (res.ok) fetchAdminData();
     };
+
     const filteredItems = items.filter(item => item.platform === activeTab);
+
     return (
         <div className="flex w-full h-screen overflow-hidden font-sans bg-neutral-950 text-neutral-200">
             {/* Mobile Header */}
@@ -396,7 +433,6 @@ function Dashboard({ userId, role, onLogout }) {
                                                 </div>
                                                 <div>
                                                     <p className="font-medium text-white">{watchItem.name}</p>
-                                                    {/* ✅ SAFE: This is inside the loop where watchItem exists */}
                                                     <p className="text-xs text-neutral-500">
                                                         Active monitor {watchItem.min_price || watchItem.max_price ? `• ${watchItem.min_price || 0}€ - ${watchItem.max_price || '∞'}€` : ''}
                                                     </p>
@@ -432,8 +468,7 @@ function Dashboard({ userId, role, onLogout }) {
     );
 }
 
-// --- 3. ENTRY POINT ---
-export default function App() {
+export default function PanelApp() {
     const [userId, setUserId] = useState(localStorage.getItem('userId'));
     const [role, setRole] = useState(localStorage.getItem('role') || 'user');
 

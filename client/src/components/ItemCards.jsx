@@ -8,8 +8,9 @@ export function ItemCard({ item }) {
             {/* Image Container */}
             <div className="relative h-56 w-full overflow-hidden bg-neutral-950">
                 <img
-                    src={item.imageUrl}
+                    src={item.image_url} // 🟢 FIXED: Matches MySQL database column name
                     alt={item.title}
+                    referrerPolicy="no-referrer" // 🟢 ADDED: Bypasses Vinted CDN security
                     className="h-full w-full object-cover transition-transform duration-700 group-hover:scale-110"
                 />
                 {/* Floating Price Tag */}
